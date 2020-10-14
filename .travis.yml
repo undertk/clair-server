@@ -1,0 +1,43 @@
+sudo: required
+
+language: minimal
+
+services:
+  - docker
+
+env:
+  - POSTGRES_IMAGE=postgres:11.6-alpine CLAIR_VERSION=v2.1.6 CLAIR_SERVER_IMAGE=undertk/clair-server
+
+install:
+  - docker build -t $CLAIR_SERVER_IMAGE --build-arg VERSION=$CLAIR_VERSION clair
+
+before_script:
+  - docker pull $POSTGRES_IMAGE
+  - docker run -d --name postgres -e 'PGDATA=/var/lib/postgresql/clair' -e POSTGRES_PASSWORD=password $POSTGRES_IMAGE
+  - until docker run --rm -it --link postgres:postgres -e PGPASSWORD=password $POSTGRES_IMAGE pg_isready -U postgres -h postgres; do sleep 1; done
+  - docker run -d --name clair --link postgres:postgres $CLAIR_SERVER_IMAGE
+
+script:
+  - ./check.sh
+  - docker logs clair
+
+after_success:
+  - docker stop clair
+  - docker stop postgres
+  - docker commit postgres undertk/clair-db:$(date +%Y-%m-%d)
+  - docker tag undertk/clair-db:$(date +%Y-%m-%d) undertk/clair-db:latest
+  - docker tag $CLAIR_SERVER_IMAGE ${CLAIR_SERVER_IMAGE}:${CLAIR_VERSION}_${TRAVIS_COMMIT}
+  - docker images
+
+before_deploy:
+  - docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
+
+deploy:
+  provider: script
+  on:
+    branch: master
+  script:
+    docker push ${CLAIR_SERVER_IMAGE}:${CLAIR_VERSION}_${TRAVIS_COMMIT} &&
+    docker push $CLAIR_SERVER_IMAGE:latest && 
+    docker push undertk/clair-db:$(date +%Y-%m-%d) &&
+    docker push undertk/clair-db:latest
